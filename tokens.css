@@ -1,0 +1,295 @@
+/* tokens.css - every colour, font, space, radius, shadow and motion value in the app.
+   Shared by the desktop pages (app.css) and the phone pages (m.css); phone_app/ keeps a
+   byte-identical copy (UI_STANDARD.md P2). Nothing else may define :root or [data-theme].
+
+   Themes: :root is Light, [data-theme=dark] is Dark. "Auto" is resolved by the prefs
+   snippet in each page's <head> (and UI.prefs in ui.js), which sets data-theme to light or
+   dark from prefers-color-scheme and follows the OS when it changes. The sidebar is dark
+   in both themes.
+   Switches on <html>: data-theme (light|dark), data-motion (on|off),
+   data-density (comfortable|compact), data-tips (on|off).
+
+   contrast: --text/--bg --text/--surface --text-2/--surface --text-2/--surface-3 --muted/--surface
+   --muted/--bg --muted/--surface-2 --accent-text/--surface --accent-text/--accent-soft --on-accent/--accent
+   --profit/--surface --profit/--profit-soft --loss/--surface --loss/--loss-soft
+   --warn/--surface --warn/--warn-soft --info/--info-soft --info/--surface
+   --on-danger/--danger --on-wa/--wa --side-text/--side-bg --side-muted/--side-bg
+   --side-active-text/--side-active-bg */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('Inter-Variable.woff2') format('woff2');
+}
+
+:root {
+  color-scheme: light;
+
+  /* surfaces and text */
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f8f9fb;
+  --surface-3: #eef0f4;
+  --border: #e4e7ec;
+  --border-strong: #cfd4dc;
+  --text: #111827;
+  --text-2: #4b5563;
+  --muted: #667085;
+  --overlay: rgba(16, 24, 40, .48);
+  --shimmer: rgba(255, 255, 255, .65);
+  --topbar-bg: rgba(255, 255, 255, .86);
+
+  /* accent (indigo) */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-text: #4338ca;
+  --accent-soft: #eef2ff;
+  --on-accent: #ffffff;
+  --focus: rgba(79, 70, 229, .35);
+
+  /* meaning: profit/loss always come with a sign and an arrow, never colour alone */
+  --profit: #047857;
+  --profit-soft: #ecfdf5;
+  --loss: #b91c1c;
+  --loss-soft: #fef2f2;
+  --warn: #b45309;
+  --warn-soft: #fffbeb;
+  --info: #1d4ed8;
+  --info-soft: #eff6ff;
+  --danger: #b91c1c;
+  --danger-hover: #991b1b;
+  --on-danger: #ffffff;
+  --wa: #15803d;
+  --on-wa: #ffffff;
+
+  /* the sidebar is dark in both themes */
+  --side-bg: #111827;
+  --side-hover: #1f2937;
+  --side-border: #1f2937;
+  --side-text: #e5e7eb;
+  --side-muted: #9ca3af;
+  --side-active-bg: #1f2937;
+  --side-active-text: #c7d2fe;
+  --side-accent: #818cf8;
+
+  /* chart series, in this fixed order (charts.js). Checked with the dataviz palette validator
+     (Machado 2009 CVD simulation, OKLab x100) on --surface in each theme: adjacent colour-blind
+     separation >= 9.1 light / 8.4 dark, normal-vision >= 19.6 / 19.3, all in the lightness band.
+     --c3..--c5 are under 3:1 on white, so every chart keeps its table (or visible labels).
+     A 7th slice folds into "Other" (--c-other); never add a colour. */
+  --c1: #4f46e5;
+  --c2: #eb6834;
+  --c3: #1baf7a;
+  --c4: #eda100;
+  --c5: #e87ba4;
+  --c6: #008300;
+  --c-other: #9ca3af;
+  --c-grid: #eceef2;
+  --c-baseline: #cfd4dc;
+  /* sequential map scale, light to dark. The map's five classes are --seq-1..--seq-5
+     (validator --ordinal: one hue, steps >= 0.06 L apart, lightest 2.27:1 on --surface);
+     --seq-0 is a tint for backgrounds only. Profit uses --loss / --map-empty / --profit. */
+  --seq-0: #eef2ff;
+  --seq-1: #9ca6f9;
+  --seq-2: #7c7ff2;
+  --seq-3: #5f58e6;
+  --seq-4: #4338ca;
+  --seq-5: #312e81;
+  --map-empty: #eceef2;
+  --map-stroke: #ffffff;
+
+  /* type */
+  --font: 'Inter', 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --fs-kpi: 26px;
+  --lh: 1.5;
+  --lh-tight: 1.25;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* space: 2 4 8 12 16 24 32 48 */
+  --s-0: 2px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+
+  /* shape */
+  --r-sm: 6px;
+  --r: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
+  --shadow: 0 1px 3px rgba(16, 24, 40, .07), 0 1px 2px rgba(16, 24, 40, .04);
+  --shadow-lg: 0 16px 40px rgba(16, 24, 40, .16), 0 4px 12px rgba(16, 24, 40, .06);
+
+  /* sizes */
+  --tap: 44px;
+  --ctl-h: 36px;
+  --ctl-h-sm: 30px;
+  --icon: 18px;
+  --icon-sm: 16px;
+  --icon-lg: 24px;
+  --icon-xl: 40px;
+  --cell-py: 10px;
+  --cell-px: 12px;
+  --card-pad: 24px;
+  --grid-gap: 24px;
+  --content-max: 1440px;
+  --sidebar-w: 248px;
+  --sidebar-w-min: 64px;
+  --topbar-h: 60px;
+  --z-sticky: 5;
+  --z-topbar: 20;
+  --z-sidebar: 30;
+  --z-popover: 50;
+  --z-modal: 60;
+  --z-toast: 70;
+
+  /* motion: everything drops to 0 with Reduce motion or the OS setting */
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 400ms;
+  --dur-chart: 600ms;
+  --dur-count: 700ms;
+  --dur-shimmer: 1400ms;
+  --dur-pulse: 2400ms;
+  --dur-spin: 800ms;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+}
+
+[data-theme=dark] {
+  color-scheme: dark;
+
+  --bg: #0f1117;
+  --surface: #171a23;
+  --surface-2: #1d212c;
+  --surface-3: #252a37;
+  --border: #2a2f3d;
+  --border-strong: #3a4152;
+  --text: #e8eaf0;
+  --text-2: #c3c7d2;
+  --muted: #9aa1b2;
+  --overlay: rgba(0, 0, 0, .6);
+  --shimmer: rgba(255, 255, 255, .06);
+  --topbar-bg: rgba(23, 26, 35, .86);
+
+  --accent: #5b54e8;
+  --accent-hover: #6d67f0;
+  --accent-text: #a5b4fc;
+  --accent-soft: #23234a;
+  --on-accent: #ffffff;
+  --focus: rgba(129, 140, 248, .45);
+
+  --profit: #34d399;
+  --profit-soft: #0f2e25;
+  --loss: #f87171;
+  --loss-soft: #3a1618;
+  --warn: #fbbf24;
+  --warn-soft: #3a2a0c;
+  --info: #60a5fa;
+  --info-soft: #0e2340;
+  --danger: #dc2626;
+  --danger-hover: #ef4444;
+  --on-danger: #ffffff;
+  --wa: #15803d;
+  --on-wa: #ffffff;
+
+  --side-bg: #0b0e14;
+  --side-hover: #161a24;
+  --side-border: #1b2030;
+  --side-active-bg: #1b2030;
+
+  --c1: #6d6cf0;
+  --c2: #d95926;
+  --c3: #199e70;
+  --c4: #c98500;
+  --c5: #d55181;
+  --c6: #008300;
+  --c-other: #5b6273;
+  --c-grid: #262b38;
+  --c-baseline: #3a4152;
+  --seq-0: #1e2140;
+  --seq-1: #4046b0;
+  --seq-2: #565bd4;
+  --seq-3: #7176ec;
+  --seq-4: #99a2fa;
+  --seq-5: #d0d8ff;
+  --map-empty: #1f2330;
+  --map-stroke: #0f1117;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow: 0 1px 3px rgba(0, 0, 0, .35), 0 1px 2px rgba(0, 0, 0, .2);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, .5), 0 4px 12px rgba(0, 0, 0, .3);
+}
+
+[data-density=compact] {
+  --ctl-h: 30px;
+  --ctl-h-sm: 26px;
+  --cell-py: 6px;
+  --cell-px: 10px;
+  --card-pad: 16px;
+  --grid-gap: 16px;
+}
+
+[data-motion=off] {
+  --dur-fast: 0ms;
+  --dur: 0ms;
+  --dur-slow: 0ms;
+  --dur-chart: 0ms;
+  --dur-count: 0ms;
+  --dur-shimmer: 0ms;
+  --dur-pulse: 0ms;
+  --dur-spin: 0ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur: 0ms;
+    --dur-slow: 0ms;
+    --dur-chart: 0ms;
+    --dur-count: 0ms;
+    --dur-shimmer: 0ms;
+    --dur-pulse: 0ms;
+    --dur-spin: 0ms;
+  }
+}
+
+/* Paper is always light, whatever the screen theme. */
+@media print {
+  :root, [data-theme=dark] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #ffffff;
+    --surface-3: #f2f2f2;
+    --border: #bbbbbb;
+    --border-strong: #999999;
+    --text: #000000;
+    --text-2: #222222;
+    --muted: #444444;
+    --accent-text: #3730a3;
+    --profit: #047857;
+    --loss: #b91c1c;
+    --shadow-sm: none;
+    --shadow: none;
+    --shadow-lg: none;
+  }
+}

@@ -1,0 +1,12 @@
+/* phone_app/app.css - only what the offline phone app has and /m/ does not.
+   Components (buttons, cards, KPI tiles, lists, sheets, toasts) come from m.css. */
+.papp-status {
+  display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-4);
+  font-size: var(--fs-xs); color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border);
+}
+.papp-status::before { content: ''; flex: none; width: var(--s-2); height: var(--s-2); border-radius: 50%; background: currentColor; }
+.papp-status.st-on { color: var(--profit); background: var(--profit-soft); }
+.papp-status.st-off { color: var(--warn); background: var(--warn-soft); }
+.papp-status.st-busy { color: var(--info); background: var(--info-soft); }
+.papp-pair { margin-top: 4vh; }
+.papp-link { max-width: 60%; white-space: normal; overflow-wrap: anywhere; font-weight: var(--fw-regular); }
