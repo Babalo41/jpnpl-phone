@@ -1,7 +1,7 @@
 // Keeps the phone app's own code on the phone so it opens with no internet.
 // Only these files are cached - never anything from the shop PC (its data lives in
 // IndexedDB, see db.js). Bump VERSION whenever a file below changes.
-const VERSION = 'jpnpl-phone-v7';
+const VERSION = 'jpnpl-phone-v9';
 const FILES = ['./', 'index.html', 'app.js', 'app.css', 'gst.js', 'db.js', 'pdf.js', 'relay.js',
   'tokens.css', 'm.css', 'icons.svg', 'ui.js', 'help.js', 'help_texts.js',
   'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
