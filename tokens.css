@@ -157,8 +157,8 @@
   --z-sticky: 5;
   --z-topbar: 20;
   --z-sidebar: 30;
-  --z-popover: 50;
-  --z-modal: 60;
+  --z-modal: 50;
+  --z-popover: 60;   /* above modals: a help (i), menu or picker list opened inside a dialog must show on top */
   --z-toast: 70;
 
   /* motion: everything drops to 0 with Reduce motion or the OS setting */
