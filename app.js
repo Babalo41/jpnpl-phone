@@ -268,6 +268,7 @@ function billView() {
   return '<div class="segmented" id="bType" role="group" aria-label="Bill type">' + ['INVOICE', 'ESTIMATE'].map((t) =>
       '<button type="button" class="btn btn-ghost' + (b.type === t ? ' on' : '') + '" data-type="' + t +
       '" aria-pressed="' + (b.type === t) + '">' + (t === 'INVOICE' ? 'Invoice' : 'Estimate') + '</button>').join('') + '</div>' +
+    '<div class="sub" data-help="papp.bill.type">Invoice or estimate?</div>' +
     '<section class="card stack-sm"><h2 class="card-title" data-help="papp.bill.customer">Customer</h2>' + (b.party ?
       '<div class="list-row"><div class="grow"><div class="name">' + esc(b.party.name) + '</div><div class="sub">' +
         esc(b.party.phone || 'no phone saved') + '</div></div><button type="button" class="btn btn-secondary btn-sm" ' +

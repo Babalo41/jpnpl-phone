@@ -154,6 +154,7 @@
   --sidebar-w: 248px;
   --sidebar-w-min: 64px;
   --topbar-h: 60px;
+  --xp-w: 460px;     /* the Explain numbers panel (explain.js) */
   --z-sticky: 5;
   --z-topbar: 20;
   --z-sidebar: 30;
