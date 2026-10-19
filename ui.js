@@ -95,6 +95,7 @@
       motion: root.getAttribute('data-motion') !== 'off',
       density: root.getAttribute('data-density') === 'compact' ? 'compact' : 'comfortable',
       sidebar: root.getAttribute('data-sidebar') === 'collapsed' ? 'collapsed' : 'open',
+      shortcuts: root.getAttribute('data-shortcuts') !== 'off',
     };
   }
 
@@ -106,6 +107,7 @@
     out.motion = typeof p.motion === 'boolean' ? p.motion : cur.motion;
     out.density = DENSITIES.indexOf(p.density) >= 0 ? p.density : cur.density;
     out.sidebar = SIDEBAR.indexOf(p.sidebar) >= 0 ? p.sidebar : cur.sidebar;
+    out.shortcuts = typeof p.shortcuts === 'boolean' ? p.shortcuts : cur.shortcuts;
     return out;
   }
 
@@ -117,7 +119,14 @@
     root.setAttribute('data-density', p.density);
     root.setAttribute('data-tips', p.help_tips ? 'on' : 'off');
     root.setAttribute('data-sidebar', p.sidebar);
+    root.setAttribute('data-shortcuts', p.shortcuts ? 'on' : 'off');
   }
+
+  // Shortcuts change nothing on screen, so the <head> snippet leaves them out; take this
+  // device's copy here until /api/shell brings the saved one.
+  try {
+    if ((JSON.parse(localStorage.getItem(PREF_KEY)) || {}).shortcuts === false) root.setAttribute('data-shortcuts', 'off');
+  } catch (e) { /* private window */ }
 
   const listeners = [];
   function notify(p) {

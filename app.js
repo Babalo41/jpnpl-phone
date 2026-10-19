@@ -205,7 +205,9 @@ function queuedQty() {
   const q = {};
   for (const b of S.out) {
     if (b.state === 'rejected' || b.payload.doc_type !== 'INVOICE') continue;
-    for (const l of b.payload.lines) if (l.sku) q[l.sku] = (q[l.sku] || 0) + Number(l.qty);
+    for (const l of b.payload.lines) {
+      if (l.sku) q[l.sku] = (q[l.sku] || 0) + Number(l.qty) * (Number(l.unit_factor) || 1);
+    }
   }
   return q;
 }
@@ -288,7 +290,9 @@ function billView() {
       const item = S.snap.items.find((x) => x.sku === l.sku);
       const left = item ? stockOf(item, q) : 0;
       return '<div class="list-row"><div class="grow"><div class="name">' + esc(l.description) + '</div><div class="sub">' +
-        esc(l.sku) + ' · ' + (left - l.qty < 0 ? pill('only ' + qtyText(left) + ' in stock', 'warn') : 'stock ' + qtyText(left)) +
+        esc(l.sku) + ' · ' + (left - l.qty * (l.unit_factor || 1) < 0 ? pill('only ' + qtyText(left) + ' in stock', 'warn') :
+        'stock ' + qtyText(left)) + (item && item.alt_uom ? ' <button type="button" class="btn btn-secondary btn-sm" ' +
+        'data-unit="' + i + '" aria-label="Change unit" data-help="papp.bill.unit">' + esc(l.uom) + '</button>' : '') +
         '</div><div class="qty"><button type="button" class="btn btn-secondary" data-dec="' + i + '" aria-label="One less">' +
         icon('minus') + '</button><input data-qty="' + i + '" inputmode="decimal" aria-label="Quantity" ' +
         'data-help="papp.bill.qty" value="' + qtyText(l.qty) + '"><button type="button" class="btn btn-secondary" data-inc="' +
@@ -332,13 +336,40 @@ function compute() {
 function addItem(item) {
   const b = S.bill;
   const have = b.lines.find((l) => l.sku === item.sku);
-  if (have) have.qty += 1;
+  if (have) { have.qty += 1; lineRate(have); }
   else {
-    // Item prices are kept with GST included; a bill without GST in its rates takes it out.
-    const rate = b.includes ? item.price : Math.round(item.price * 100 / (100 + (item.gst || 0)) * 100) / 100;
-    b.lines.push({sku: item.sku, description: item.name, hsn: item.hsn, uom: item.uom, qty: 1, rate, gst_rate: item.gst || 0});
+    const line = {sku: item.sku, description: item.name, hsn: item.hsn, uom: item.uom, qty: 1, rate: 0,
+      gst_rate: item.gst || 0, unit_factor: 1, auto: true};
+    lineRate(line);
+    b.lines.push(line);
   }
   render();
+}
+
+function lineRate(l) {
+  const item = S.snap.items.find((x) => x.sku === l.sku);
+  if (!item || !l.auto) return;
+  const party = partyOf(S.bill);
+  const own = party && S.snap.prices ? (S.snap.prices[String(party.id)] || {})[item.sku] : null;
+  let price = own ? Number(own[0]) : Number(item.price) || 0;
+  let incl = own ? Boolean(own[1]) : true;
+  const units = Number(l.qty) * (l.unit_factor || 1);
+  if (!own && item.wh && units >= Number(item.wh[1])) { price = Number(item.wh[0]); incl = true; }
+  const gst = item.gst || 0;
+  let rate = price * (l.unit_factor || 1);
+  if (incl && !S.bill.includes) rate = rate * 100 / (100 + gst);
+  if (!incl && S.bill.includes) rate = rate * (100 + gst) / 100;
+  l.rate = Math.round(rate * 100) / 100;
+}
+
+function switchUnit(l) {
+  const item = S.snap.items.find((x) => x.sku === l.sku);
+  if (!item || !item.alt_uom) return;
+  const was = l.unit_factor || 1;
+  l.uom = l.uom === item.alt_uom ? item.uom : item.alt_uom;
+  l.unit_factor = l.uom === item.alt_uom ? Number(item.alt_factor) || 1 : 1;
+  if (l.auto) lineRate(l);
+  else l.rate = Math.round(l.rate / was * l.unit_factor * 100) / 100;
 }
 
 function findItems(text) {
@@ -399,7 +430,8 @@ async function saveBill() {
     party_phone: party ? party.phone : (b.walkPhone.trim() || (qIsPhone ? q : '')),
     party_gstin: party ? party.gstin : '',
     party_address: party ? party.address : '', price_includes_tax: b.includes ? '1' : '0',
-    lines: b.lines.map((l) => ({sku: l.sku, description: l.description, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate})),
+    lines: b.lines.map((l) => ({sku: l.sku, description: l.description, qty: l.qty, rate: l.rate, gst_rate: l.gst_rate,
+      uom: l.uom, unit_factor: l.unit_factor || 1})),
     notes: b.notes, received, method: b.method, total: calc.totals.total,
   };
   const entry = {uuid: payload.uuid, created: new Date().toISOString(), state: 'waiting', payload,
@@ -732,7 +764,7 @@ function wireBill() {
 // One click handler for everything
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-go],[data-act],[data-type],[data-party],[data-add],[data-inc],[data-dec],[data-del],' +
-    '[data-local],[data-pcbill],[data-item],[data-low]');
+    '[data-local],[data-pcbill],[data-item],[data-low],[data-unit]');
   if (!t) return;
   const b = S.bill;
   if (t.dataset.go) { S.view = t.dataset.go; if (S.view === 'bill' && !S.bill) newBill(); render(); window.scrollTo(0, 0); return; }
@@ -740,12 +772,14 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.party) {
     b.party = S.snap.customers.find((c) => String(c.id) === t.dataset.party);
     b.partyQ = '';
+    b.lines.forEach(lineRate);
     render();
     return;
   }
   if (t.dataset.add) { addItem(S.snap.items.find((i) => i.sku === t.dataset.add)); return; }
-  if (t.dataset.inc) { b.lines[t.dataset.inc].qty += 1; render(); return; }
-  if (t.dataset.dec) { const l = b.lines[t.dataset.dec]; l.qty = Math.max(1, l.qty - 1); render(); return; }
+  if (t.dataset.inc) { const l = b.lines[t.dataset.inc]; l.qty += 1; lineRate(l); render(); return; }
+  if (t.dataset.dec) { const l = b.lines[t.dataset.dec]; l.qty = Math.max(1, l.qty - 1); lineRate(l); render(); return; }
+  if (t.dataset.unit) { switchUnit(b.lines[t.dataset.unit]); render(); return; }
   if (t.dataset.del) { b.lines.splice(Number(t.dataset.del), 1); render(); return; }
   if (t.dataset.local) {
     const entry = S.out.find((x) => x.uuid === t.dataset.local) || S.synced.find((x) => x.uuid === t.dataset.local);
@@ -784,8 +818,8 @@ document.addEventListener('change', (e) => {
   const t = e.target;
   if (!S.bill) return;
   const v = Number(t.value);
-  if (t.dataset.qty && v > 0) { S.bill.lines[t.dataset.qty].qty = v; render(); }
-  if (t.dataset.rate && v >= 0) { S.bill.lines[t.dataset.rate].rate = v; render(); }
+  if (t.dataset.qty && v > 0) { const l = S.bill.lines[t.dataset.qty]; l.qty = v; lineRate(l); render(); }
+  if (t.dataset.rate && v >= 0) { const l = S.bill.lines[t.dataset.rate]; l.rate = v; l.auto = false; render(); }
 });
 
 $('gear').innerHTML = icon('settings');
