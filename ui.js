@@ -1,6 +1,6 @@
 /* ui.js - shared helpers for every page, desktop and phone (UI_STANDARD.md U9, U11, U12).
    Exposes two globals and nothing else:
-     UI  - icon, esc, toast, confirm, modal, skeleton, empty, busy, copy, countUp, sparkline,
+     UI  - icon, esc, toast, confirm, modal, skeleton, empty, busy, copy, scan, countUp, sparkline,
            setWidth, motionOn, dur, token, debounce, prefs, onPrefs
      Fmt - inr, inrCompact, num, qty, pct, date, dateTime, month, pl, delta
    ES2017, one IIFE. phone_app/ keeps a byte-identical copy (P2), so nothing here may call a
@@ -355,6 +355,119 @@
     }
   }
 
+  // ------------------------------------------------------------ camera barcode scanner
+
+  const SCAN_FORMATS = ['code_128', 'data_matrix', 'qr_code', 'code_39', 'code_93', 'ean_13', 'ean_8', 'itf',
+    'upc_a', 'upc_e', 'codabar', 'pdf417', 'aztec'];
+
+  // Reads barcodes, Data Matrix and QR codes with the camera. Resolves the text read (several
+  // codes one per line) or '' when closed. opts: title, decodeUrl (the PC reads a photo or
+  // frame: POST photo, answers {text}), headers (sent with it instead of cookies - the phone
+  // app's bearer token). Three ways, best first: live camera read by the
+  // browser (BarcodeDetector, Android Chrome); live camera with frames read by the PC (a PC
+  // webcam); a photo the PC reads (a phone on plain http, where browsers give no live camera).
+  function scan(opts) {
+    opts = opts || {};
+    const camOk = !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    const url = opts.decodeUrl || '';
+    return new Promise((resolve) => {
+      let stream = null;
+      let timer = 0;
+      let done = false;
+      let waiting = false;
+      const body = make('div', 'stack-sm');
+      body.innerHTML = (camOk ? '<video class="scan-cam" playsinline muted></video>' : '') +
+        '<p class="hint" role="status"></p>' +
+        (url ? '<label class="btn btn-secondary btn-block">' + icon('camera') + 'Take a photo of the label' +
+          '<input type="file" accept="image/*" capture="environment" class="sr-only" data-help="rtn.scan_photo"></label>' : '');
+      const video = body.querySelector('video');
+      const say = (t) => { body.querySelector('.hint').textContent = t; };
+      const h = modal({title: opts.title || 'Scan a barcode', body: body, onClose: () => finish('')});
+
+      function finish(text) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (stream) stream.getTracks().forEach((t) => t.stop());
+        if (text && navigator.vibrate) { try { navigator.vibrate(60); } catch (e) { /* no buzz */ } }
+        h.close();
+        resolve(text || '');
+      }
+
+      function viaPc(blob, fast) {
+        const fd = new FormData();
+        fd.append('photo', blob, 'scan.jpg');
+        return fetch(url + (fast ? '?fast=1' : ''), {method: 'POST', body: fd,
+          headers: opts.headers || {}, credentials: opts.headers ? 'omit' : 'same-origin'})
+          .then((r) => r.json().then((d) => {
+            if (!r.ok) throw new Error(d.error || 'Error ' + r.status);
+            return d.text || '';
+          }));
+      }
+
+      const input = body.querySelector('input[type=file]');
+      if (input) {
+        input.addEventListener('change', () => {
+          const f = input.files && input.files[0];
+          if (!f) return;
+          say('Reading the photo...');
+          viaPc(f, false).then((text) => {
+            if (text) finish(text);
+            else say('No barcode found in the photo. Hold the phone closer, keep it flat and try again - or type the number.');
+          }, (e) => say(e.message));
+          input.value = '';
+        });
+      }
+
+      if (!camOk) {
+        say(url ? 'This browser gives no live camera on this link - take a photo of the label instead.' :
+          'This browser cannot use the camera here - type the number printed under the barcode.');
+        return;
+      }
+      let detector = null;
+      const ready = 'BarcodeDetector' in window ? window.BarcodeDetector.getSupportedFormats()
+        .then((have) => { detector = new window.BarcodeDetector({formats: SCAN_FORMATS.filter((f) => have.indexOf(f) >= 0)}); })
+        .catch(() => { detector = null; }) : Promise.resolve();
+      ready.then(() => navigator.mediaDevices.getUserMedia({audio: false,
+        video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}}}))
+        .then((s) => {
+          if (done) { s.getTracks().forEach((t) => t.stop()); return; }
+          stream = s;
+          video.srcObject = s;
+          return video.play().then(() => {
+            say('Point the camera at the barcode or the square code on the label.');
+            tick();
+          });
+        })
+        .catch(() => say(url ? 'The camera did not start - take a photo of the label instead.' :
+          'The camera did not start - type the number printed under the barcode.'));
+
+      function tick() {
+        if (done) return;
+        if (detector) {
+          detector.detect(video).then((found) => {
+            const texts = found.map((b) => b.rawValue).filter(Boolean);
+            if (texts.length) finish(texts.filter((t, i) => texts.indexOf(t) === i).join('\n'));
+            else timer = setTimeout(tick, 120);
+          }, () => { timer = setTimeout(tick, 300); });
+          return;
+        }
+        if (!url || waiting || !video.videoWidth) { timer = setTimeout(tick, 300); return; }
+        const c = make('canvas');
+        c.width = video.videoWidth;
+        c.height = video.videoHeight;
+        c.getContext('2d').drawImage(video, 0, 0);
+        waiting = true;
+        c.toBlob((blob) => {
+          viaPc(blob, true).then((text) => {
+            waiting = false;
+            if (text) finish(text); else timer = setTimeout(tick, 400);
+          }, () => { waiting = false; timer = setTimeout(tick, 1500); });
+        }, 'image/jpeg', 0.85);
+      }
+    });
+  }
+
   // ------------------------------------------------------------ numbers in motion
 
   // Animates el's text from its last value to `to` (motion-aware). fmt defaults to Fmt.num.
@@ -509,6 +622,7 @@
     empty: empty,
     busy: busy,
     copy: copy,
+    scan: scan,
     countUp: countUp,
     sparkline: sparkline,
     setWidth: setWidth,

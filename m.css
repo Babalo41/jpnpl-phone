@@ -18,7 +18,7 @@
    EXPLAIN    (built by explain.js) [data-explain=on] .xp-t .xp-focus .xp-banner · in the sheet: .xp-crumbs .xp-hero
               .xp-value .xp-chips > .xp-chip .xp-sec .xp-tiles > .xp-tile .xp-steps > .xp-step(.xp-result) .xp-op .xp-wf
               .xp-flow > .xp-node .xp-src .xp-stats .xp-files .xp-rec .xp-rule .xp-logics .xp-foot
-   OTHER      video.scan (barcode camera) */
+   OTHER      video.scan (barcode camera) · video.scan-cam (UI.scan) */
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -191,7 +191,7 @@ input[type=checkbox], input[type=radio] { width: var(--icon); height: var(--icon
 .done-mark { display: inline-grid; place-items: center; width: calc(var(--tap) + var(--s-4)); height: calc(var(--tap) + var(--s-4));
   border-radius: 50%; color: var(--profit); background: var(--profit-soft); }
 .done-mark .i { width: var(--icon-xl); height: var(--icon-xl); }
-video.scan { width: 100%; max-height: 50vh; border-radius: var(--r-lg); background: var(--text); }
+video.scan, video.scan-cam { width: 100%; max-height: 50vh; border-radius: var(--r-lg); background: var(--text); }
 
 /* ---------------------------------------------------------------- status */
 .badge { display: inline-flex; align-items: center; gap: var(--s-1); padding: var(--s-0) var(--s-2); font-size: var(--fs-xs);

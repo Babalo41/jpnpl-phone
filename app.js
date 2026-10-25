@@ -25,7 +25,7 @@ const today = () => {
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() :
   'x' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12));
 
-const S = {conn: null, snap: null, online: false, checking: false, view: 'home', synced: [], out: [], bill: null};
+const S = {conn: null, snap: null, online: false, checking: false, view: 'home', synced: [], out: [], bill: null, rq: []};
 
 class Offline extends Error {}
 class Unpaired extends Error {}
@@ -91,6 +91,7 @@ async function refresh(quiet) {
     await takeSnapshot();
     const sent = await syncOutbox();
     if (sent) await takeSnapshot();
+    await syncReturns();
     S.online = true;
   } catch (e) {
     if (e instanceof Unpaired) { await unpaired(e.message); return; }
@@ -139,6 +140,120 @@ async function syncOutbox() {
       (warns.length ? ' ' + warns[0] : ''), bad ? 'err' : 'ok');
   }
   return ok;
+}
+
+// ── returns checked in on this phone ────────────────────────
+// Each scan waits here (IndexedDB 'rq') until the PC has it; the PC applies it exactly once
+// (returns.phone_scans) as if checked in on the day it was scanned, and leaves anything
+// unclear for its Scan desk. So a parcel can be checked in with no internet at all.
+const canReturns = () => S.snap && ['owner', 'manager', 'returns'].includes(S.snap.user.role);
+const deskOnly = () => S.snap && S.snap.user.role === 'returns';
+const RQ_KEEP = 150;
+const RETURN_CONDITIONS = [
+  {code: 'OK', label: 'Good - back to stock', good: true},
+  {code: 'RTO', label: 'RTO sealed - back to stock', good: true},
+  {code: 'DAMAGED', label: 'Repair later'},
+  {code: 'SCRAP', label: 'Scrap - unusable'},
+  {code: 'WRONG', label: 'Wrong item came back'},
+  {code: 'MISSING', label: 'Empty box / not received'},
+];
+const RQ_STATE = {waiting: ['Waiting to send', ''], done: ['Checked in', 'ok'], already: ['Already checked in', 'warn'],
+  review: ['Sort on the PC', 'warn'], not_found: ['Not found', 'bad'], error: ['Not sent', 'bad']};
+
+async function syncReturns() {
+  const waiting = S.rq.filter((r) => r.state === 'waiting');
+  if (!waiting.length || !canReturns()) return 0;
+  const r = await pc('/api/m/returns/sync', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({scans: waiting.map((q) => ({uuid: q.uuid, code: q.code, disposition: q.disposition, at: q.at}))}),
+    timeout: 60000});
+  let done = 0, look = 0;
+  for (const res of r.results) {
+    const q = S.rq.find((x) => x.uuid === res.uuid);
+    if (!q || res.status === 'working') continue;
+    Object.assign(q, {state: res.status, message: res.message || '', item: res.item || '', order: res.order_id || ''});
+    if (res.status === 'done') done++; else if (res.status !== 'already') look++;
+  }
+  await kv.set('rq', S.rq);
+  if (done || look) {
+    toast((done ? done + ' return(s) checked in on the PC.' : '') + (look ? ' ' + look + ' to sort on the PC desk.' : ''),
+      look ? 'warn' : 'ok');
+  }
+  return done;
+}
+
+async function queueReturn(code, disposition) {
+  const d = new Date();
+  S.rq.unshift({uuid: uuid(), code, disposition, state: 'waiting', message: '', item: '',
+    at: today() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')});
+  const finished = S.rq.filter((q) => q.state !== 'waiting');
+  S.rq = S.rq.filter((q) => q.state === 'waiting').concat(finished.slice(0, RQ_KEEP))
+    .sort((a, b) => b.at.localeCompare(a.at));
+  await kv.set('rq', S.rq);
+  if (navigator.vibrate) { try { navigator.vibrate(40); } catch (e) { /* no buzz */ } }
+  render();
+  if (!S.conn || !S.conn.token) return;
+  try {
+    await syncReturns();
+    S.online = true;
+  } catch (e) {
+    if (e instanceof Unpaired) { await unpaired(e.message); return; }
+    S.online = false;
+    toast(e instanceof Offline ? 'Saved on this phone - it goes to the PC when it is back.' : e.message,
+      e instanceof Offline ? 'info' : 'err');
+  }
+  render();
+}
+
+function askCondition(code) {
+  const codes = code.split('\n').filter(Boolean);
+  if (S.rto) { queueReturn(code, 'RTO'); return; }
+  const m = sheet('What came back?', '<p class="small">Parcel <b>' + esc(codes[0]) + '</b>' +
+    (codes.length > 1 ? ' and ' + (codes.length - 1) + ' more code(s) from the label' : '') + '</p><div class="stack-sm">' +
+    RETURN_CONDITIONS.map((c) => (c.good ? '<button type="button" class="btn btn-secondary btn-block"' :
+      '<button type="button" class="btn btn-danger btn-block"') + ' data-cond="' + c.code + '">' + esc(c.label) +
+      '</button>').join('') + '</div>');
+  m.body.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-cond]');
+    if (!b) return;
+    m.close();
+    queueReturn(code, b.dataset.cond);
+  });
+}
+
+async function scanReturn() {
+  const live = S.online && S.conn && S.conn.pc && S.conn.token;
+  const text = await window.UI.scan({title: 'Scan the parcel label',
+    decodeUrl: live ? S.conn.pc + '/api/returns/decode' : '',
+    headers: live ? {Authorization: 'Bearer ' + S.conn.token} : undefined});
+  if (text) askCondition(text);
+}
+
+function viewReturns() {
+  if (!canReturns()) return empty('Your role cannot check returns in.');
+  const waiting = S.rq.filter((q) => q.state === 'waiting').length;
+  const finished = S.rq.length - waiting;
+  const cond = (c) => (RETURN_CONDITIONS.find((x) => x.code === c) || {label: c}).label;
+  const rows = S.rq.map((q) => {
+    const st = RQ_STATE[q.state] || [q.state, ''];
+    return '<div class="list-row"><div class="grow"><div class="name">' + esc(q.item || q.code.split('\n')[0]) +
+      '</div><div class="sub">' + esc([cond(q.disposition), q.at, q.order ? 'order ' + q.order : '', q.message]
+      .filter(Boolean).join(' · ')) + '</div></div>' + pill(st[0], st[1]) +
+      (q.state === 'waiting' || q.state === 'error' ? '<button type="button" class="btn btn-ghost btn-icon" ' +
+        'aria-label="Remove this scan" data-rqdel="' + q.uuid + '">' + icon('x') + '</button>' : '') + '</div>';
+  }).join('');
+  return '<p class="hint">' + (S.online ? 'Each scan goes to the shop PC straight away.' :
+    'Shop PC offline - scans wait on this phone and go when it is back.') +
+    (waiting ? ' ' + waiting + ' waiting to send.' : '') + '</p>' +
+    '<form id="rqForm" class="field-row"><input id="rqCode" type="search" class="grow" autocomplete="off" enterkeyhint="go" ' +
+    'placeholder="Or type the AWB / order id" aria-label="Type a code from the parcel" data-help="papp.returns.code">' +
+    '<button type="submit" class="btn btn-secondary">Next</button></form>' +
+    '<label class="switch"><input type="checkbox" id="rqRto" data-help="papp.returns.rto"' + (S.rto ? ' checked' : '') +
+    '><span class="switch-track"></span><span class="grow">Unopened RTO parcels - good straight away, no question</span></label>' +
+    '<section class="card card-flush"><div class="card-head"><h2 class="card-title" data-help="papp.returns.list">' +
+    'Scanned parcels</h2>' + (finished ? '<button type="button" class="btn btn-ghost btn-sm" data-act="rqclear">' +
+    'Clear finished</button>' : '') + '</div>' + (rows || empty('Nothing scanned yet.')) + '</section>' +
+    '<div class="m-bar"><div class="grow xs muted">Works with no internet</div>' +
+    '<button type="button" class="btn btn-primary" data-act="rqscan">Scan parcel</button></div>';
 }
 
 async function unpaired(message) {
@@ -222,9 +337,11 @@ function drawStatus() {
   const bad = S.out.filter((b) => b.state === 'rejected').length;
   el.hidden = S.view === 'pair';
   el.className = 'papp-status ' + (S.checking ? 'st-busy' : S.online ? 'st-on' : 'st-off');
+  const rq = S.rq.filter((q) => q.state === 'waiting').length;
   el.innerHTML = (S.checking ? 'Checking the shop PC...' : S.online ? 'Connected to the shop PC' :
     'Shop PC offline' + (S.snap ? ' - using data from ' + esc(S.snap.at) : '')) +
-    (waiting ? ' · ' + waiting + ' bill(s) waiting' : '') + (bad ? ' · ' + bad + ' need attention' : '');
+    (waiting ? ' · ' + waiting + ' bill(s) waiting' : '') + (bad ? ' · ' + bad + ' need attention' : '') +
+    (rq ? ' · ' + rq + ' return(s) waiting' : '');
 }
 
 // key: help key under papp.<screen>.*; value is ready HTML.
@@ -686,27 +803,31 @@ function viewSettings() {
 }
 
 // The bottom tab bar (P3): one list, tabs the role cannot use are hidden.
+// A returns-desk phone (role 'returns') has no sales screens.
 const PHONE_NAV = [
-  {go: 'home', label: 'Home', icon: 'house'},
+  {go: 'home', label: 'Home', icon: 'house', sales: true},
   {go: 'bill', label: 'Bill', icon: 'plus', bill: true},
-  {go: 'bills', label: 'Bills', icon: 'receipt'},
+  {go: 'bills', label: 'Bills', icon: 'receipt', sales: true},
   {go: 'stock', label: 'Stock', icon: 'package'},
+  {go: 'returns', label: 'Returns', icon: 'package-open', returns: true},
 ];
+const tabOk = (t) => (!t.bill || canBill()) && (!t.returns || canReturns()) && !(t.sales && deskOnly());
 
 function render() {
   if (!S.conn || !S.conn.token) S.view = 'pair';
   const titles = {pair: 'Pair phone', home: S.snap ? (S.snap.firm.trade_name || S.snap.firm.display_name) : 'Shop',
-    bill: 'New bill', bills: 'Bills', stock: 'Stock', done: 'Bill saved', settings: 'This phone'};
+    bill: 'New bill', bills: 'Bills', stock: 'Stock', returns: 'Returns', done: 'Bill saved', settings: 'This phone'};
   $('title').textContent = titles[S.view] || 'Shop';
   $('who').textContent = S.view !== 'home' && S.snap ? (S.snap.firm.trade_name || S.snap.firm.display_name) : '';
   $('gear').hidden = S.view === 'pair';
   if (S.view === 'bill' && (!S.snap || !canBill())) S.view = 'home';
+  if ((S.view === 'home' || S.view === 'bills') && deskOnly()) S.view = 'returns';
   if (S.view === 'bill' && !S.bill) newBill();
   const views = {pair: viewPair, home: viewHome, bill: billView, bills: viewBills, stock: viewStock, done: viewDone,
-    settings: viewSettings};
+    settings: viewSettings, returns: viewReturns};
   $('main').innerHTML = views[S.view]();
   $('tabs').hidden = S.view === 'pair';
-  $('tabs').innerHTML = S.view === 'pair' ? '' : PHONE_NAV.filter((t) => !t.bill || canBill()).map((t) =>
+  $('tabs').innerHTML = S.view === 'pair' ? '' : PHONE_NAV.filter(tabOk).map((t) =>
     '<button type="button" class="m-tab tab' + (t.go === S.view ? ' active" aria-current="page' : '') + '" data-go="' + t.go +
     '">' + icon(t.icon) + '<span>' + t.label + '</span></button>').join('');
   document.body.classList.toggle('m-bare', S.view === 'pair');
@@ -718,6 +839,17 @@ function render() {
     $('stockQ').oninput = debounce(() => { S.stockQ = $('stockQ').value; render(); $('stockQ').focus(); }, 250);
   }
   if (S.view === 'settings') wireSettings();
+  if (S.view === 'returns' && $('rqForm')) {
+    $('rqForm').onsubmit = (e) => {
+      e.preventDefault();
+      const v = $('rqCode').value.trim();
+      if (v) askCondition(v);
+    };
+    $('rqRto').onchange = () => {
+      S.rto = $('rqRto').checked;
+      try { localStorage.setItem('jpnpl.rq.rto', S.rto ? '1' : ''); } catch (e) { /* private mode */ }
+    };
+  }
 }
 
 function wireSettings() {
@@ -764,7 +896,7 @@ function wireBill() {
 // One click handler for everything
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-go],[data-act],[data-type],[data-party],[data-add],[data-inc],[data-dec],[data-del],' +
-    '[data-local],[data-pcbill],[data-item],[data-low],[data-unit]');
+    '[data-local],[data-pcbill],[data-item],[data-low],[data-unit],[data-rqdel]');
   if (!t) return;
   const b = S.bill;
   if (t.dataset.go) { S.view = t.dataset.go; if (S.view === 'bill' && !S.bill) newBill(); render(); window.scrollTo(0, 0); return; }
@@ -789,6 +921,13 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.pcbill) { pcBillSheet(S.snap.bills.find((x) => String(x.id) === t.dataset.pcbill)); return; }
   if (t.dataset.item) { itemSheet(t.dataset.item); return; }
   if (t.dataset.low) { S.stockLow = t.dataset.low === '1'; render(); return; }
+  if (t.dataset.rqdel) {
+    if (!await window.UI.confirm('Remove this scan? It has not reached the PC.', {ok: 'Remove scan', danger: true})) return;
+    S.rq = S.rq.filter((q) => q.uuid !== t.dataset.rqdel);
+    await kv.set('rq', S.rq);
+    render();
+    return;
+  }
   switch (t.dataset.act) {
     case 'unparty': b.party = null; render(); break;
     case 'scan': scan(); break;
@@ -796,13 +935,20 @@ document.addEventListener('click', async (e) => {
     case 'save': saveBill(); break;
     case 'sharepdf': shareFile(pdfFile(S.done), shareText(S.done)); break;
     case 'check': refresh(); break;
+    case 'rqscan': scanReturn(); break;
+    case 'rqclear':
+      S.rq = S.rq.filter((q) => q.state === 'waiting');
+      await kv.set('rq', S.rq);
+      render();
+      break;
     case 'relocate':
       toast((await relocate()) ? 'Found the shop PC at its new link.' : 'No new link found - scan the QR code on the PC.',
         'info');
       refresh(true);
       break;
     case 'unpair': {
-      const msg = S.out.length ? S.out.length + ' bill(s) have not reached the PC yet. They stay on this phone ' +
+      const left = S.out.length + S.rq.filter((q) => q.state === 'waiting').length;
+      const msg = left ? left + ' bill(s) or return(s) have not reached the PC yet. They stay on this phone ' +
         'and go when you pair again. Unpair?' : 'Unpair this phone?';
       if (!await window.UI.confirm(msg, {ok: 'Unpair phone', danger: true})) break;
       S.conn.token = null;
@@ -835,6 +981,8 @@ $('gear').onclick = () => { S.view = 'settings'; render(); };
   S.snap = (await kv.get('snap')) || null;
   S.synced = (await kv.get('synced')) || [];
   S.out = await outbox.all();
+  S.rq = (await kv.get('rq')) || [];
+  try { S.rto = localStorage.getItem('jpnpl.rq.rto') === '1'; } catch (e) { S.rto = false; }
   S.view = S.conn && S.conn.token ? 'home' : 'pair';
   render();
   refresh(true);

@@ -53,7 +53,7 @@ export function placeOfSupply(bill, party, firm) {
   if (pos) return pos;
   const gstin = String(bill.party_gstin || (party && party.gstin) || '').trim();
   if (/^\d\d/.test(gstin)) return gstin.slice(0, 2);
-  const code = String((party && party.state) || '').trim();
+  const code = String((party && (party.state || party.state_code)) || '').trim();
   if (/^\d\d$/.test(code)) return code;
   return firm.state_code || '';
 }
