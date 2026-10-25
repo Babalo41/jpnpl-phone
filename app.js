@@ -365,7 +365,9 @@ function viewHome() {
     tile('home', 'receivable', 'To receive', money(b.receivable), b.overdue > 0 ? money(b.overdue) + ' overdue' : '',
       b.overdue > 0 ? 'neg' : '') +
     tile('home', 'stock_value', 'Stock value', money(b.stock_value)) +
-    tile('home', 'low_stock', 'Low stock', low + ' item(s)', '', low ? 'warn' : '') + '</div>' +
+    tile('home', 'low_stock', 'Low stock', low + ' item(s)', '', low ? 'warn' : '') +
+    (b.returns_new && canReturns() ? tile('home', 'returns_new', 'New returns', String(b.returns_new), 'since yesterday') : '') +
+    '</div>' +
     (b.top_due.length ? '<section class="card"><h2 class="card-title" data-help="papp.home.due">Owe the most</h2>' +
       b.top_due.map((p) => '<div class="list-row"><div class="grow"><div class="name">' + esc(p.name) +
       '</div><div class="sub">oldest ' + p.oldest_days + ' days</div></div><div class="amt">' + money(p.total) +

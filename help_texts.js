@@ -1747,6 +1747,11 @@ window.HELP_TEXTS = {
   'home.month_expenses': {t: 'Expenses this month', what: 'What you spent this month on rent, salary, courier and so on.',
     how: 'Sum of the Expenses page totals (including GST) dated this month.',
     tip: 'Keep adding expenses here so Profit and loss shows the real net profit.'},
+  'home.returns_inbox': {t: 'Seller account', what: 'Which of your seller accounts this return report belongs to.',
+    how: 'The extension saves return reports in the folder Downloads, JPNoProfitLoss, returns and the app loads them by itself. ' +
+    'With one account of that marketplace it goes there; with several, into the one whose orders hold most of the ' +
+    'order ids in the file. When that is not clear the file waits here.',
+    tip: 'The file stays in the folder - loading it again never adds a return twice.'},
   'home.stock_value': {t: 'Stock value', what: 'What the goods in your own warehouse and FBA are worth at cost.',
     how: 'For each item: units in stock x average purchase rate (opening, purchase and inward rates, weighted by quantity).',
     tip: 'Items with no purchase rate count as zero - add opening rates on the Items import.'},
@@ -4770,6 +4775,10 @@ window.HELP_TEXTS = {
   'papp.home.low_stock': {t: 'Low stock', what: 'Items at or below their reorder level.',
     how: 'Snapshot stock minus bills waiting on this phone, compared with each reorder level.',
     tip: 'Tap Stock > Low stock to see them.'},
+  'papp.home.returns_new': {t: 'New returns', what: 'Returns added to the list since the start of yesterday.',
+    how: 'Returns whose row was created from yesterday 00:00 on: return reports (loaded by hand, by the API syncs or ' +
+    'straight from the returns folder of the extension) and returns added by hand.',
+    tip: 'Open Returns to check them in as they arrive.'},
   'papp.home.due': {t: 'Owe the most', what: 'Customers with the biggest overdue balance.',
     how: 'From the last snapshot of the PC.',
     tip: 'Remind them when you next talk to them.'},
