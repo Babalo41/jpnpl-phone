@@ -26,7 +26,8 @@ const today = () => {
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() :
   'x' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12));
 
-const S = {conn: null, snap: null, online: false, checking: false, view: 'home', synced: [], out: [], bill: null, rq: []};
+const S = {conn: null, snap: null, online: false, checking: false, view: 'home', synced: [], out: [], bill: null, rq: [],
+  allF: {q: '', platform: '', stage: ''}, claimsAll: false};
 
 class Offline extends Error {}
 class Unpaired extends Error {}
@@ -199,7 +200,7 @@ async function queueReturn(code, disposition, pick) {
   if (!S.conn || !S.conn.token) return;
   try {
     await syncReturns();
-    await fetchDesk();
+    await fetchTab();
     S.online = true;
   } catch (e) {
     if (e instanceof Unpaired) { await unpaired(e.message); return; }
@@ -342,17 +343,54 @@ async function scanReturn() {
 // queue as a scan), today's check-ins (undo a wrong one) and parcels nobody could match.
 const MARKET = {amazon: 'Amazon', flipkart: 'Flipkart', meesho: 'Meesho'};
 const CAME_BACK = {OK: 'Good', DAMAGED: 'Repair later', REPAIRED: 'Repaired', SCRAP: 'Scrap', WRONG: 'Wrong item'};
-const RQ_TABS = [['scan', 'Scan'], ['waiting', 'Waiting'], ['done', 'Today'], ['unknown', 'Not found']];
+const RQ_TABS = [['scan', 'Scan'], ['waiting', 'Waiting'], ['done', 'Today'], ['all', 'All'], ['claims', 'Claims']];
+// [stage filter, label, summary counter] - the Returns workspace's stage list.
+const RQ_STAGES = [['', 'All stages', 'total'], ['EXPECTED', 'Expected - on its way', 'stage_expected'],
+  ['ARRIVED', 'Arrived - waiting check-in', 'arrived'], ['CHECKED_IN', 'Checked in', 'checked_in'],
+  ['HELD', 'Held for repair', 'damaged'], ['CLAIM_FILED', 'Claim filed', 'claim_filed'], ['SETTLED', 'Settled', 'settled'],
+  ['REJECTED', 'Rejected', 'rejected'], ['LOSS', 'Counted as a loss', ''], ['OVERDUE', 'Overdue', 'overdue'],
+  ['UNMAPPED', 'Item not mapped', 'unmapped']];
+const CLAIM_LABEL = {'': 'To file', TO_FILE: 'To file', FILED: 'Filed', SETTLED: 'Settled', REJECTED: 'Rejected',
+  NOT_NEEDED: 'Not needed'};
+const CLAIM_KIND = {FILED: 'info', SETTLED: 'ok', REJECTED: 'bad', NOT_NEEDED: ''};
 
 async function fetchDesk() {
   S.desk = await pc('/api/m/returns/desk?q=' + encodeURIComponent(S.deskQ || ''));
   S.deskAt = new Date().toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'});
 }
 
-async function loadDesk() {
+function allQuery() {
+  const f = S.allF;
+  const p = new URLSearchParams({q: f.q, platform: f.platform});
+  if (f.stage === 'OVERDUE') p.set('overdue', '1');
+  else if (f.stage === 'UNMAPPED') p.set('unmapped', '1');
+  else if (f.stage) p.set('stage', f.stage);
+  return p;
+}
+
+async function fetchAll(more) {
+  const p = allQuery();
+  if (more) p.set('offset', String(S.all.rows.length));
+  const d = await pc('/api/m/returns/list?' + p);
+  if (more) Object.assign(S.all, {rows: S.all.rows.concat(d.rows), total: d.total});
+  else S.all = d;
+}
+
+async function fetchClaims() {
+  S.claims = await pc('/api/m/returns/claims' + (S.claimsAll ? '?all=1' : ''));
+}
+
+// The counters and desk lists, plus the All or Claims list when that one is open.
+async function fetchTab() {
+  await fetchDesk();
+  if (S.rqTab === 'all') await fetchAll();
+  if (S.rqTab === 'claims') await fetchClaims();
+}
+
+async function loadDesk(fetcher) {
   if (!canReturns() || !S.conn || !S.conn.token) return;
   try {
-    await fetchDesk();
+    await (fetcher || fetchTab)();
     S.online = true;
   } catch (e) {
     if (e instanceof Unpaired) { await unpaired(e.message); return; }
@@ -361,19 +399,55 @@ async function loadDesk() {
   if (S.view === 'returns') render();
 }
 
-async function undoReturn(id) {
-  const r = ((S.desk && S.desk.done) || []).find((x) => String(x.id) === String(id));
-  if (!r || !await window.UI.confirm('Undo the check-in of ' + (r.item_name || r.product_name || r.sku || 'this return') +
-    '? It goes back to waiting and its stock move is reversed.', {ok: 'Undo check-in', danger: true})) return;
+// A change made on the shop PC from this phone (undo, repair, claim...), then the lists again.
+async function rqAct(path, body, done) {
   try {
-    await pc('/api/returns/update', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: r.id, action: 'undo'})});
-    toast('Undone - the return is waiting again.', 'info');
+    await pc(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    toast(done, 'ok');
     await loadDesk();
+    return true;
   } catch (e) {
-    if (e instanceof Unpaired) { await unpaired(e.message); return; }
-    toast(e instanceof Offline ? 'Undo needs the shop PC - try again when it is back.' : e.message, 'err');
+    if (e instanceof Unpaired) { await unpaired(e.message); return false; }
+    toast(e instanceof Offline ? 'This needs the shop PC - try again when it is back.' : e.message, 'err');
+    return false;
   }
+}
+
+function findReturn(id) {
+  const lists = [S.all && S.all.rows, S.claims && S.claims.rows, S.desk && S.desk.done, S.desk && S.desk.waiting];
+  for (const rows of lists) {
+    const r = (rows || []).find((x) => String(x.id) === String(id));
+    if (r) return r;
+  }
+  return null;
+}
+
+async function undoReturn(id) {
+  const r = findReturn(id);
+  if (!r || !await window.UI.confirm('Undo the check-in of ' + (r.item_name || r.product_name || r.sku || 'this return') +
+    '? It goes back to waiting and its stock move is reversed.', {ok: 'Undo check-in', danger: true})) return false;
+  return rqAct('/api/returns/update', {id: r.id, action: 'undo'}, 'Undone - the return is waiting again.');
+}
+
+async function resolveUnknown(id) {
+  if (!await window.UI.confirm('Mark this parcel as sorted? It leaves the not-found list on every device.',
+    {ok: 'Mark sorted'})) return;
+  rqAct('/api/returns/unknown/resolve', {id, note: 'sorted on the phone'}, 'Marked as sorted.');
+}
+
+const cameBack = (r) => r.status === 'MISSING' ? 'Not received' : r.status === 'RECEIVED' ?
+  (CAME_BACK[r.disposition] || r.disposition) : '';
+
+function stagePill(r) {
+  const label = r.status === 'EXPECTED' ? (r.delivered_at ? 'Arrived' : 'Expected') : cameBack(r) || r.stage_label;
+  const kind = r.overdue ? 'bad' : r.status === 'EXPECTED' ? (r.delivered_at ? 'warn' : '') : r.status === 'MISSING' ? 'bad' :
+    ['OK', 'REPAIRED'].includes(r.disposition) ? 'ok' : 'warn';
+  return pill(label + (r.overdue ? ' · late' : ''), kind);
+}
+
+function claimDue(r) {
+  if (r.days_left == null || !['', 'TO_FILE'].includes(r.claim_status || '')) return '';
+  return r.days_left < 0 ? Math.abs(r.days_left) + ' days late' : r.days_left === 0 ? 'due today' : r.days_left + ' days left';
 }
 
 function deskMeta(r) {
@@ -385,23 +459,23 @@ function deskName(r) {
   return esc(r.item_name || r.product_name || r.sku || r.channel_sku) + (r.sku ? '' : ' ' + pill('Not mapped', 'warn'));
 }
 
+const offlineList = () => empty(S.online ? 'Loading...' : 'These lists need the shop PC - scanning still works offline.');
+
 function deskList() {
   const d = S.desk;
-  if (!d) return empty(S.online ? 'Loading the desk...' : 'These lists need the shop PC - scanning still works offline.');
-  if (S.rqTab === 'unknown') {
-    return '<p class="hint">Parcels the PC could not match. Sort them on the PC Scan desk under "Parcels not found".</p>' +
-      '<section class="card card-flush">' + (d.unknown.length ? d.unknown.map((u) =>
-        '<div class="list-row"><div class="grow"><div class="name">' + esc(u.code.split('\n')[0]) + '</div><div class="sub">' +
-        esc([u.scanned_at, u.note].filter(Boolean).join(' · ')) + '</div></div></div>').join('') :
-        empty('Every parcel was matched.')) + '</section>';
-  }
+  if (!d) return offlineList();
   if (S.rqTab === 'done') {
     return '<section class="card card-flush">' + (d.done.length ? d.done.map((r) =>
-      '<div class="list-row"><div class="grow"><div class="name">' + deskName(r) + '</div><div class="sub">' +
-      esc(deskMeta(r)) + '</div></div>' + (r.status === 'MISSING' ? pill('Not received', 'bad') :
-        pill(CAME_BACK[r.disposition] || r.disposition, r.disposition === 'OK' ? 'ok' : 'warn')) +
+      '<div class="list-row"><div class="grow is-click" data-rqrow="' + r.id + '"><div class="name">' + deskName(r) +
+      '</div><div class="sub">' + esc(deskMeta(r)) + '</div></div>' + stagePill(r) +
       '<button type="button" class="btn btn-ghost btn-sm" data-rqundo="' + r.id + '">Undo</button></div>').join('') :
-      empty('Nothing checked in today.')) + '</section>';
+      empty('Nothing checked in today.')) + '</section>' +
+      '<section class="card card-flush"><div class="card-head"><h2 class="card-title" data-help="papp.returns.unknown">' +
+      'Parcels not found</h2></div>' + (d.unknown.length ? d.unknown.map((u) =>
+        '<div class="list-row"><div class="grow"><div class="name">' + esc(u.code.split('\n')[0]) + '</div><div class="sub">' +
+        esc([u.scanned_at, u.note].filter(Boolean).join(' · ')) + '</div></div>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-rqsort="' + u.id + '">Sorted</button></div>').join('') :
+        empty('Every parcel was matched.')) + '</section>';
   }
   const rows = d.waiting.map((r) =>
     '<div class="list-row is-click" data-rqpick="' + r.id + '"><div class="grow"><div class="name">' + deskName(r) +
@@ -425,9 +499,145 @@ function viewReturns() {
       tile('returns', 'done_today', 'Checked in today', String(st.done_today), 'as of ' + S.deskAt) +
       tile('returns', 'unknown_today', 'Not found today', String(st.unknown_today)) + '</div>' : '') +
     '<div class="segmented" role="group" aria-label="Show">' + RQ_TABS.map(seg).join('') + '</div>' +
-    (tab === 'scan' ? viewScans() : deskList()) +
+    (tab === 'scan' ? viewScans() : tab === 'all' ? viewAll() : tab === 'claims' ? viewClaims() : deskList()) +
     '<div class="m-bar"><div class="grow xs muted">' + (tab === 'scan' ? 'Works with no internet' : 'Lists from the shop PC') +
     '</div><button type="button" class="btn btn-primary" data-act="rqscan">Scan parcel</button></div>';
+}
+
+function returnRow(r, right) {
+  return '<div class="list-row is-click" data-rqrow="' + r.id + '"><div class="grow"><div class="name">' + deskName(r) +
+    '</div><div class="sub">' + esc(deskMeta(r)) + '</div></div>' + right + '</div>';
+}
+
+// Returns > All: the Returns workspace's pipeline - every return, any stage, with its counters.
+function viewAll() {
+  const f = S.allF;
+  const s = S.all && S.all.summary;
+  const opt = (o) => '<option value="' + o[0] + '"' + (f.stage === o[0] ? ' selected' : '') + '>' + esc(o[1]) +
+    (s && o[2] ? ' (' + s[o[2]] + ')' : '') + '</option>';
+  const market = (k) => '<option value="' + k + '"' + (f.platform === k ? ' selected' : '') + '>' +
+    (MARKET[k] || 'All marketplaces') + '</option>';
+  const filters = '<input id="allQ" type="search" placeholder="Search order, AWB, SKU or name" ' +
+    'aria-label="Search all returns" data-help="papp.returns.all_search" value="' + esc(f.q) + '">' +
+    '<div class="field-row"><select id="allStage" aria-label="Stage" data-help="papp.returns.stage">' +
+    RQ_STAGES.map(opt).join('') + '</select><select id="allMarket" aria-label="Marketplace" ' +
+    'data-help="papp.returns.market">' + ['', 'amazon', 'flipkart', 'meesho'].map(market).join('') + '</select></div>';
+  const d = S.all;
+  if (!d) return filters + offlineList();
+  const alerts = (d.alerts || []).map((a) => '<div class="callout ' + (a.level === 'danger' ? 'bad' : 'warn') + '">' +
+    esc(a.text) + '</div>').join('');
+  return '<div class="kpi-grid">' +
+    tile('returns', 'all_total', 'Returns', String(s.total), money(s.value) + ' order value') +
+    tile('returns', 'all_loss', 'Lost at cost', money(s.loss), s.missing + ' never received', s.loss > 0 ? 'neg' : '') +
+    tile('returns', 'all_overdue', 'Overdue', String(s.overdue), 'claim or check-in late', s.overdue ? 'neg' : '') +
+    tile('returns', 'all_claims', 'Claims to file', String(s.claims_to_file), s.unknown_parcels + ' parcel(s) not found',
+      s.claims_to_file ? 'warn' : '') + '</div>' + alerts + filters +
+    '<section class="card card-flush">' + (d.rows.length ? d.rows.map((r) => returnRow(r, stagePill(r))).join('') :
+      empty('No returns match.')) + '</section>' +
+    (d.rows.length < d.total ? '<button type="button" class="btn btn-secondary btn-block" data-act="rqmore">Show more (' +
+      (d.total - d.rows.length) + ' left)</button>' : '');
+}
+
+// Returns > Claims: what the workspace's Claims tab lists, best ones to file first.
+function viewClaims() {
+  const d = S.claims;
+  const all = '<label class="switch"><input type="checkbox" id="claimsAll" data-help="papp.returns.claims_all"' +
+    (S.claimsAll ? ' checked' : '') + '><span class="switch-track"></span><span class="grow">Show settled and closed' +
+    '</span></label>';
+  if (!d) return all + offlineList();
+  const right = (r) => {
+    const due = claimDue(r);
+    return '<div class="amt">' + pill(CLAIM_LABEL[r.claim_status || ''] || r.claim_status,
+      r.overdue ? 'bad' : CLAIM_KIND[r.claim_status] !== undefined ? CLAIM_KIND[r.claim_status] : 'warn') +
+      (due ? '<div class="sub">' + esc(due) + '</div>' : '') + '</div>';
+  };
+  return '<div class="kpi-grid">' +
+    tile('returns', 'cl_to_file', 'To file', String(d.to_file), money(d.value) + ' open', d.to_file ? 'warn' : '') +
+    tile('returns', 'cl_overdue', 'Past deadline', String(d.overdue), '', d.overdue ? 'neg' : '') +
+    tile('returns', 'cl_lost', 'Lost at cost', money(d.lost), '', d.lost > 0 ? 'neg' : '') +
+    tile('returns', 'cl_recovered', 'Received back', money(d.recovered), '', 'pos') + '</div>' + all +
+    '<p class="hint">Tap a claim to mark it filed, settled or rejected. File it on the marketplace\'s own site.</p>' +
+    '<section class="card card-flush">' + (d.rows.length ? d.rows.map((r) => returnRow(r, right(r))).join('') :
+      empty('No open claims.')) + '</section>';
+}
+
+// Everything the workspace knows about one return, and what can be done to it from here.
+function returnSheet(r) {
+  const dt = (v) => v ? window.Fmt.date(v) : '';
+  const facts = [
+    ['Marketplace', MARKET[r.platform] || r.platform], ['Seller account', r.account_id], ['Order', r.order_id],
+    ['Item id', r.item_id], ['AWB / tracking', r.tracking_id],
+    ['Your item', r.sku ? r.sku + (r.item_name ? ' · ' + r.item_name : '') : 'Not mapped - map it on the shop PC'],
+    ['Marketplace SKU', r.channel_sku], ['Product', r.product_name], ['Qty', qtyText(r.qty)],
+    ['Reason', r.return_reason], ['Type', r.return_type], ['Ordered', dt(r.order_date)], ['Returned', dt(r.return_date)],
+    ['Delivered to you', dt(r.delivered_at)], ['Checked in', dt(r.received_at)], ['Stage', r.stage_label],
+    ['Came back', cameBack(r)], ['Order value', r.order_value ? money(r.order_value) : ''],
+    ['Lost at cost', r.loss_value ? money(r.loss_value) : ''],
+    ['Claim', r.can_claim || r.claim_status ? CLAIM_LABEL[r.claim_status || ''] || r.claim_status : ''],
+    ['Claim deadline', r.claim_due ? dt(r.claim_due) + (claimDue(r) ? ' (' + claimDue(r) + ')' : '') : ''],
+    ['Win chance', r.win_chance], ['Claim ref', r.claim_ref], ['Received back', r.claim_amount ? money(r.claim_amount) : ''],
+    ['Note', r.note], ['Proof photos', r.photo_count ? String(r.photo_count) : ''],
+  ].filter((x) => x[1]);
+  const risk = (r.risk_flags || []).length ? '<div class="callout warn">' + esc(r.risk_flags.join(' · ')) + '</div>' : '';
+  const held = r.status === 'RECEIVED' && r.disposition === 'DAMAGED';
+  // Today's rows come from the desk list, which has no can_claim: same rule as returns.CLAIM_DISPOSITIONS.
+  const canClaim = r.can_claim || ['DAMAGED', 'SCRAP', 'WRONG', 'REPAIRED'].includes(r.disposition) || r.status === 'MISSING';
+  const claimForm = canClaim ? '<section class="card stack-sm"><h2 class="card-title" data-help="papp.returns.claim">' +
+    'Claim</h2><select id="rsStatus" aria-label="Claim status" data-help="papp.returns.claim_status">' +
+    Object.keys(CLAIM_LABEL).filter(Boolean).map((k) => '<option value="' + k + '"' +
+      ((r.claim_status || 'TO_FILE') === k ? ' selected' : '') + '>' + CLAIM_LABEL[k] + '</option>').join('') + '</select>' +
+    '<input id="rsRef" type="text" placeholder="Claim reference / case id" aria-label="Claim reference" ' +
+    'data-help="papp.returns.claim_ref" value="' + esc(r.claim_ref || '') + '">' +
+    '<input id="rsAmount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Amount received back" ' +
+    'aria-label="Amount received back" data-help="papp.returns.claim_amount" value="' + (r.claim_amount || '') + '">' +
+    '<button type="button" class="btn btn-secondary btn-block" data-s="claim">Save claim</button>' + '</section>' : '';
+  const m = sheet(r.item_name || r.product_name || r.sku || r.channel_sku || 'Return', '<div class="stack">' + risk +
+    '<section class="card card-flush">' + facts.map((x) => '<div class="list-row"><div class="muted small nowrap">' +
+      esc(x[0]) + '</div><div class="grow right small">' + esc(x[1]) + '</div></div>').join('') + '</section>' +
+    (r.status === 'EXPECTED' ? '<button type="button" class="btn btn-primary btn-block" data-s="checkin">Check in - parcel is in my hand</button>' : '') +
+    (held ? '<button type="button" class="btn btn-secondary btn-block" data-s="restock">Repaired - back to stock</button>' +
+      '<button type="button" class="btn btn-danger btn-block" data-s="scrap">Scrap it</button>' : '') +
+    claimForm +
+    '<label class="btn btn-secondary btn-block">' + icon('camera') + 'Add proof photo<input id="rsPhoto" type="file" ' +
+    'accept="image/*" capture="environment" class="hidden" aria-label="Add proof photo" data-help="papp.returns.photo">' +
+    '</label>' +
+    (r.status !== 'EXPECTED' ? '<button type="button" class="btn btn-ghost btn-block" data-s="undo">Undo check-in</button>' : '') + '</div>');
+  m.body.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-s]');
+    if (!b) return;
+    const act = b.dataset.s;
+    if (act === 'checkin') { m.close(); askCondition(r.tracking_id || r.order_id, r, {return_id: r.id}); return; }
+    if (act === 'undo') { if (await undoReturn(r.id)) m.close(); return; }
+    if (act === 'scrap' && !await window.UI.confirm('Scrap this return? It leaves stock and counts as a loss at its ' +
+      'buying cost.', {ok: 'Scrap it', danger: true})) return;
+    let ok;
+    if (act === 'restock' || act === 'scrap') {
+      ok = await rqAct('/api/returns/hold', {id: r.id, action: act === 'restock' ? 'RESTOCK' : 'SCRAP'},
+        act === 'restock' ? 'Back in stock.' : 'Scrapped.');
+    } else if (act === 'claim') {
+      ok = await rqAct('/api/returns/claim', {id: r.id, status: m.body.querySelector('#rsStatus').value,
+        ref: m.body.querySelector('#rsRef').value.trim(), amount: m.body.querySelector('#rsAmount').value}, 'Claim saved.');
+    }
+    if (ok) m.close();
+  });
+  m.body.querySelector('#rsPhoto').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file, file.name || 'photo.jpg');
+    form.append('return_id', String(r.id));
+    form.append('source', 'phone');
+    try {
+      await pc('/api/m/returns/photo/upload', {method: 'POST', body: form, timeout: 60000});
+      r.photo_count = (r.photo_count || 0) + 1;
+      toast('Photo saved on the shop PC.', 'ok');
+      m.close();
+      loadDesk();
+    } catch (err) {
+      if (err instanceof Unpaired) { m.close(); await unpaired(err.message); return; }
+      toast(err instanceof Offline ? 'Photos need the shop PC - try again when it is back.' : err.message, 'err');
+    }
+  });
 }
 
 function viewScans() {
@@ -1048,6 +1258,10 @@ function render() {
       if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
     }, 300);
   }
+  if (S.view === 'returns' && $('allQ')) wireAll();
+  if (S.view === 'returns' && $('claimsAll')) {
+    $('claimsAll').onchange = () => { S.claimsAll = $('claimsAll').checked; loadDesk(fetchClaims); };
+  }
   if (S.view === 'returns' && $('rqForm')) {
     $('rqForm').onsubmit = (e) => {
       e.preventDefault();
@@ -1059,6 +1273,17 @@ function render() {
       try { localStorage.setItem('jpnpl.rq.rto', S.rto ? '1' : ''); } catch (e) { /* private mode */ }
     };
   }
+}
+
+function wireAll() {
+  $('allQ').oninput = debounce(async () => {
+    S.allF.q = $('allQ').value;
+    await loadDesk(() => fetchAll());
+    const box = $('allQ');
+    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+  }, 300);
+  $('allStage').onchange = () => { S.allF.stage = $('allStage').value; loadDesk(() => fetchAll()); };
+  $('allMarket').onchange = () => { S.allF.platform = $('allMarket').value; loadDesk(() => fetchAll()); };
 }
 
 function wireSettings() {
@@ -1105,7 +1330,8 @@ function wireBill() {
 // One click handler for everything
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-go],[data-act],[data-type],[data-party],[data-add],[data-inc],[data-dec],[data-del],' +
-    '[data-local],[data-pcbill],[data-item],[data-low],[data-unit],[data-rqdel],[data-rqtab],[data-rqpick],[data-rqundo]');
+    '[data-local],[data-pcbill],[data-item],[data-low],[data-unit],[data-rqdel],[data-rqtab],[data-rqpick],[data-rqundo],' +
+    '[data-rqrow],[data-rqsort]');
   if (!t) return;
   const b = S.bill;
   if (t.dataset.go) {
@@ -1139,6 +1365,8 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.low) { S.stockLow = t.dataset.low === '1'; render(); return; }
   if (t.dataset.rqtab) { S.rqTab = t.dataset.rqtab; render(); if (S.rqTab !== 'scan') loadDesk(); return; }
   if (t.dataset.rqundo) { undoReturn(t.dataset.rqundo); return; }
+  if (t.dataset.rqsort) { resolveUnknown(t.dataset.rqsort); return; }
+  if (t.dataset.rqrow) { const r = findReturn(t.dataset.rqrow); if (r) returnSheet(r); return; }
   if (t.dataset.rqpick) {
     const r = ((S.desk && S.desk.waiting) || []).find((x) => String(x.id) === t.dataset.rqpick);
     if (r) askCondition(r.tracking_id || r.order_id, r, {return_id: r.id});
@@ -1159,6 +1387,7 @@ document.addEventListener('click', async (e) => {
     case 'sharepdf': shareFile(pdfFile(S.done), shareText(S.done)); break;
     case 'check': refresh(); break;
     case 'rqscan': scanReturn(); break;
+    case 'rqmore': loadDesk(() => fetchAll(true)); break;
     case 'rqclear':
       S.rq = S.rq.filter((q) => q.state === 'waiting');
       await kv.set('rq', S.rq);
