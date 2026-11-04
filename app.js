@@ -7,6 +7,7 @@ import {kv, outbox, keepData} from './db.js';
 import {computeBill, nextDocNo, BillError} from './gst.js';
 import {billPdf, billFileName} from './pdf.js';
 import {findPc} from './relay.js';
+import './barcode_decoder.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => window.UI.esc(s);
@@ -92,6 +93,7 @@ async function refresh(quiet) {
     const sent = await syncOutbox();
     if (sent) await takeSnapshot();
     await syncReturns();
+    if (S.view === 'returns' && canReturns()) await fetchDesk();
     S.online = true;
   } catch (e) {
     if (e instanceof Unpaired) { await unpaired(e.message); return; }
@@ -164,7 +166,8 @@ async function syncReturns() {
   const waiting = S.rq.filter((r) => r.state === 'waiting');
   if (!waiting.length || !canReturns()) return 0;
   const r = await pc('/api/m/returns/sync', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({scans: waiting.map((q) => ({uuid: q.uuid, code: q.code, disposition: q.disposition, at: q.at}))}),
+    body: JSON.stringify({scans: waiting.map((q) => ({uuid: q.uuid, code: q.code, disposition: q.disposition, at: q.at,
+      pick: q.pick}))}),
     timeout: 60000});
   let done = 0, look = 0;
   for (const res of r.results) {
@@ -181,9 +184,11 @@ async function syncReturns() {
   return done;
 }
 
-async function queueReturn(code, disposition) {
+// `pick` is the return / order line chosen in a picker below: the PC checks in that one,
+// where the code alone would match every item of the parcel again.
+async function queueReturn(code, disposition, pick) {
   const d = new Date();
-  S.rq.unshift({uuid: uuid(), code, disposition, state: 'waiting', message: '', item: '',
+  S.rq.unshift({uuid: uuid(), code, disposition, pick, state: 'waiting', message: '', item: '',
     at: today() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')});
   const finished = S.rq.filter((q) => q.state !== 'waiting');
   S.rq = S.rq.filter((q) => q.state === 'waiting').concat(finished.slice(0, RQ_KEEP))
@@ -194,6 +199,7 @@ async function queueReturn(code, disposition) {
   if (!S.conn || !S.conn.token) return;
   try {
     await syncReturns();
+    await fetchDesk();
     S.online = true;
   } catch (e) {
     if (e instanceof Unpaired) { await unpaired(e.message); return; }
@@ -204,20 +210,108 @@ async function queueReturn(code, disposition) {
   render();
 }
 
-function askCondition(code) {
+function askCondition(code, match, pick) {
   const codes = code.split('\n').filter(Boolean);
-  if (S.rto) { queueReturn(code, 'RTO'); return; }
-  const m = sheet('What came back?', '<p class="small">Parcel <b>' + esc(codes[0]) + '</b>' +
+  if (S.rto) { queueReturn(code, 'RTO', pick); return; }
+  let matchInfo = '';
+  let sugDisp = '';
+  if (match) {
+    const itemTitle = match.sku ? (match.sku + (match.product_name ? ' · ' + match.product_name : '')) : (match.channel_sku || '');
+    matchInfo = '<div class="sub mb-2"><b>' + esc(itemTitle) + '</b>' +
+      (match.order_id ? '<div>Order ' + esc(match.order_id) + (match.return_reason ? ' · ' + esc(match.return_reason) : '') + '</div>' : '') +
+      '</div>';
+    if (match.suggested_condition && match.suggested_condition.disposition) {
+      sugDisp = match.suggested_condition.disposition;
+      matchInfo += '<div class="sub mb-2 text-pos">Suggested: <b>' + esc(match.suggested_condition.reason || sugDisp) + '</b></div>';
+    }
+  }
+  const m = sheet('What came back?', matchInfo + '<p class="small">Parcel <b>' + esc(codes[0]) + '</b>' +
     (codes.length > 1 ? ' and ' + (codes.length - 1) + ' more code(s) from the label' : '') + '</p><div class="stack-sm">' +
-    RETURN_CONDITIONS.map((c) => (c.good ? '<button type="button" class="btn btn-secondary btn-block"' :
-      '<button type="button" class="btn btn-danger btn-block"') + ' data-cond="' + c.code + '">' + esc(c.label) +
-      '</button>').join('') + '</div>');
+    RETURN_CONDITIONS.map((c) => {
+      const isSug = sugDisp && c.code === sugDisp;
+      const tag = isSug ? '<button type="button" class="btn btn-primary btn-block"' :
+        (c.good ? '<button type="button" class="btn btn-secondary btn-block"' : '<button type="button" class="btn btn-danger btn-block"');
+      return tag + ' data-cond="' + c.code + '">' + esc(c.label) +
+        (isSug ? ' (Suggested)' : '') + '</button>';
+    }).join('') + '</div>');
   m.body.addEventListener('click', (e) => {
     const b = e.target.closest('[data-cond]');
     if (!b) return;
     m.close();
-    queueReturn(code, b.dataset.cond);
+    queueReturn(code, b.dataset.cond, pick);
   });
+}
+
+function pickReturnMatch(code, matches) {
+  const m = sheet('Pick matching return', '<p class="small">' + matches.length + ' returns match this parcel. Pick one:</p>' +
+    '<div class="stack-sm">' +
+    matches.slice(0, 8).map((r, i) =>
+      '<button type="button" class="btn btn-secondary btn-block text-left" data-pick-ret="' + i + '">' +
+      '<b>' + esc(r.sku || r.channel_sku) + '</b> · ' + esc(r.platform || '') +
+      '<div class="sub">' + esc([r.order_id, r.product_name, r.return_reason].filter(Boolean).join(' · ')) + '</div>' +
+      '</button>').join('') +
+    '</div>');
+  m.body.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-pick-ret]');
+    if (!b) return;
+    const idx = parseInt(b.dataset.pickRet, 10);
+    const picked = matches[idx];
+    m.close();
+    askCondition(picked.tracking_id || picked.order_id || code, picked, {return_id: picked.id});
+  });
+}
+
+function pickOrderMatch(code, orders) {
+  const m = sheet('Pick matching order', '<p class="small">' + orders.length + ' orders match this scan. Pick one to add as return:</p>' +
+    '<div class="stack-sm">' +
+    orders.slice(0, 8).map((o, i) =>
+      '<button type="button" class="btn btn-secondary btn-block text-left" data-pick-ord="' + i + '">' +
+      '<b>' + esc(o.product_name || o.channel_sku) + '</b> · ' + esc(o.platform || '') +
+      '<div class="sub">' + esc(['order ' + o.order_id, o.sku ? 'SKU ' + o.sku : '', o.order_date ? 'ordered ' + o.order_date : ''].filter(Boolean).join(' · ')) + '</div>' +
+      '</button>').join('') +
+    '</div>');
+  m.body.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-pick-ord]');
+    if (!b) return;
+    const idx = parseInt(b.dataset.pickOrd, 10);
+    const picked = orders[idx];
+    m.close();
+    askCondition(picked.order_id || picked.tracking_id || code, picked, {platform: picked.platform,
+      account_id: picked.account_id, order_id: picked.order_id, item_id: picked.item_id || '',
+      channel_sku: picked.channel_sku || ''});
+  });
+}
+
+async function handleScannedCode(text) {
+  if (!text) return;
+  const live = S.online && S.conn && S.conn.pc && S.conn.token;
+  if (live) {
+    try {
+      const r = await pc('/api/returns/scan?code=' + encodeURIComponent(text));
+      if (r.found && r.matches) {
+        const waiting = r.matches.filter((m) => m.status === 'EXPECTED');
+        if (waiting.length > 1) {
+          pickReturnMatch(text, waiting);
+          return;
+        } else if (waiting.length === 1) {
+          askCondition(text, waiting[0]);
+          return;
+        } else if (r.matches.length === 1) {
+          askCondition(text, r.matches[0]);
+          return;
+        }
+      } else if (!r.found && r.orders && r.orders.length > 1) {
+        pickOrderMatch(text, r.orders);
+        return;
+      } else if (!r.found && r.orders && r.orders.length === 1) {
+        askCondition(text, r.orders[0]);
+        return;
+      }
+    } catch (e) {
+      // fallback offline
+    }
+  }
+  askCondition(text);
 }
 
 async function scanReturn() {
@@ -225,11 +319,103 @@ async function scanReturn() {
   const text = await window.UI.scan({title: 'Scan the parcel label',
     decodeUrl: live ? S.conn.pc + '/api/returns/decode' : '',
     headers: live ? {Authorization: 'Bearer ' + S.conn.token} : undefined});
-  if (text) askCondition(text);
+  if (text) await handleScannedCode(text);
+}
+
+// ── the PC desk's own lists (need the PC) ───────────────────
+// Returns still waiting (tap one to check in exactly that one - it goes through the same
+// queue as a scan), today's check-ins (undo a wrong one) and parcels nobody could match.
+const MARKET = {amazon: 'Amazon', flipkart: 'Flipkart', meesho: 'Meesho'};
+const CAME_BACK = {OK: 'Good', DAMAGED: 'Repair later', REPAIRED: 'Repaired', SCRAP: 'Scrap', WRONG: 'Wrong item'};
+const RQ_TABS = [['scan', 'Scan'], ['waiting', 'Waiting'], ['done', 'Today'], ['unknown', 'Not found']];
+
+async function fetchDesk() {
+  S.desk = await pc('/api/m/returns/desk?q=' + encodeURIComponent(S.deskQ || ''));
+  S.deskAt = new Date().toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'});
+}
+
+async function loadDesk() {
+  if (!canReturns() || !S.conn || !S.conn.token) return;
+  try {
+    await fetchDesk();
+    S.online = true;
+  } catch (e) {
+    if (e instanceof Unpaired) { await unpaired(e.message); return; }
+    if (e instanceof Offline) S.online = false; else toast(e.message, 'err');
+  }
+  if (S.view === 'returns') render();
+}
+
+async function undoReturn(id) {
+  const r = ((S.desk && S.desk.done) || []).find((x) => String(x.id) === String(id));
+  if (!r || !await window.UI.confirm('Undo the check-in of ' + (r.item_name || r.product_name || r.sku || 'this return') +
+    '? It goes back to waiting and its stock move is reversed.', {ok: 'Undo check-in', danger: true})) return;
+  try {
+    await pc('/api/returns/update', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: r.id, action: 'undo'})});
+    toast('Undone - the return is waiting again.', 'info');
+    await loadDesk();
+  } catch (e) {
+    if (e instanceof Unpaired) { await unpaired(e.message); return; }
+    toast(e instanceof Offline ? 'Undo needs the shop PC - try again when it is back.' : e.message, 'err');
+  }
+}
+
+function deskMeta(r) {
+  return [MARKET[r.platform] || r.platform, r.order_id ? 'order ' + r.order_id : '', r.tracking_id ? 'AWB ' + r.tracking_id : '',
+    'qty ' + qtyText(r.qty), r.return_reason].filter(Boolean).join(' · ');
+}
+
+function deskName(r) {
+  return esc(r.item_name || r.product_name || r.sku || r.channel_sku) + (r.sku ? '' : ' ' + pill('Not mapped', 'warn'));
+}
+
+function deskList() {
+  const d = S.desk;
+  if (!d) return empty(S.online ? 'Loading the desk...' : 'These lists need the shop PC - scanning still works offline.');
+  if (S.rqTab === 'unknown') {
+    return '<p class="hint">Parcels the PC could not match. Sort them on the PC Scan desk under "Parcels not found".</p>' +
+      '<section class="card card-flush">' + (d.unknown.length ? d.unknown.map((u) =>
+        '<div class="list-row"><div class="grow"><div class="name">' + esc(u.code.split('\n')[0]) + '</div><div class="sub">' +
+        esc([u.scanned_at, u.note].filter(Boolean).join(' · ')) + '</div></div></div>').join('') :
+        empty('Every parcel was matched.')) + '</section>';
+  }
+  if (S.rqTab === 'done') {
+    return '<section class="card card-flush">' + (d.done.length ? d.done.map((r) =>
+      '<div class="list-row"><div class="grow"><div class="name">' + deskName(r) + '</div><div class="sub">' +
+      esc(deskMeta(r)) + '</div></div>' + (r.status === 'MISSING' ? pill('Not received', 'bad') :
+        pill(CAME_BACK[r.disposition] || r.disposition, r.disposition === 'OK' ? 'ok' : 'warn')) +
+      '<button type="button" class="btn btn-ghost btn-sm" data-rqundo="' + r.id + '">Undo</button></div>').join('') :
+      empty('Nothing checked in today.')) + '</section>';
+  }
+  const rows = d.waiting.map((r) =>
+    '<div class="list-row is-click" data-rqpick="' + r.id + '"><div class="grow"><div class="name">' + deskName(r) +
+    '</div><div class="sub">' + esc(deskMeta(r)) + '</div></div>' +
+    (r.delivered_at ? pill('Arrived ' + window.Fmt.date(r.delivered_at), 'warn') : '') + '</div>').join('');
+  return '<input id="deskQ" type="search" placeholder="Search order, AWB, SKU or name" aria-label="Search waiting returns" ' +
+    'data-help="papp.returns.search" value="' + esc(S.deskQ || '') + '">' +
+    '<p class="hint">Tap a return when its parcel is in your hand - you pick what came back.</p>' +
+    '<section class="card card-flush">' + (rows || empty(S.deskQ ? 'No waiting return matches.' : 'No returns waiting.')) +
+    '</section>' + (d.waiting.length >= d.limit ? '<p class="hint center">Showing the first ' + d.limit +
+    ' - search to find others.</p>' : '');
 }
 
 function viewReturns() {
   if (!canReturns()) return empty('Your role cannot check returns in.');
+  const tab = S.rqTab || 'scan';
+  const st = S.desk && S.desk.stats;
+  const seg = (t) => '<button type="button" class="btn btn-ghost' + (t[0] === tab ? ' on' : '') + '" data-rqtab="' + t[0] +
+    '" aria-pressed="' + (t[0] === tab) + '">' + t[1] + '</button>';
+  return (st ? '<div class="kpi-grid">' + tile('returns', 'waiting', 'Waiting', String(st.waiting)) +
+      tile('returns', 'done_today', 'Checked in today', String(st.done_today), 'as of ' + S.deskAt) +
+      tile('returns', 'unknown_today', 'Not found today', String(st.unknown_today)) + '</div>' : '') +
+    '<div class="segmented" role="group" aria-label="Show">' + RQ_TABS.map(seg).join('') + '</div>' +
+    (tab === 'scan' ? viewScans() : deskList()) +
+    '<div class="m-bar"><div class="grow xs muted">' + (tab === 'scan' ? 'Works with no internet' : 'Lists from the shop PC') +
+    '</div><button type="button" class="btn btn-primary" data-act="rqscan">Scan parcel</button></div>';
+}
+
+function viewScans() {
   const waiting = S.rq.filter((q) => q.state === 'waiting').length;
   const finished = S.rq.length - waiting;
   const cond = (c) => (RETURN_CONDITIONS.find((x) => x.code === c) || {label: c}).label;
@@ -251,9 +437,7 @@ function viewReturns() {
     '><span class="switch-track"></span><span class="grow">Unopened RTO parcels - good straight away, no question</span></label>' +
     '<section class="card card-flush"><div class="card-head"><h2 class="card-title" data-help="papp.returns.list">' +
     'Scanned parcels</h2>' + (finished ? '<button type="button" class="btn btn-ghost btn-sm" data-act="rqclear">' +
-    'Clear finished</button>' : '') + '</div>' + (rows || empty('Nothing scanned yet.')) + '</section>' +
-    '<div class="m-bar"><div class="grow xs muted">Works with no internet</div>' +
-    '<button type="button" class="btn btn-primary" data-act="rqscan">Scan parcel</button></div>';
+    'Clear finished</button>' : '') + '</div>' + (rows || empty('Nothing scanned yet.')) + '</section>';
 }
 
 async function unpaired(message) {
@@ -841,11 +1025,19 @@ function render() {
     $('stockQ').oninput = debounce(() => { S.stockQ = $('stockQ').value; render(); $('stockQ').focus(); }, 250);
   }
   if (S.view === 'settings') wireSettings();
+  if (S.view === 'returns' && $('deskQ')) {
+    $('deskQ').oninput = debounce(async () => {
+      S.deskQ = $('deskQ').value;
+      await loadDesk();
+      const box = $('deskQ');
+      if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+    }, 300);
+  }
   if (S.view === 'returns' && $('rqForm')) {
     $('rqForm').onsubmit = (e) => {
       e.preventDefault();
       const v = $('rqCode').value.trim();
-      if (v) askCondition(v);
+      if (v) handleScannedCode(v);
     };
     $('rqRto').onchange = () => {
       S.rto = $('rqRto').checked;
@@ -898,10 +1090,17 @@ function wireBill() {
 // One click handler for everything
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-go],[data-act],[data-type],[data-party],[data-add],[data-inc],[data-dec],[data-del],' +
-    '[data-local],[data-pcbill],[data-item],[data-low],[data-unit],[data-rqdel]');
+    '[data-local],[data-pcbill],[data-item],[data-low],[data-unit],[data-rqdel],[data-rqtab],[data-rqpick],[data-rqundo]');
   if (!t) return;
   const b = S.bill;
-  if (t.dataset.go) { S.view = t.dataset.go; if (S.view === 'bill' && !S.bill) newBill(); render(); window.scrollTo(0, 0); return; }
+  if (t.dataset.go) {
+    S.view = t.dataset.go;
+    if (S.view === 'bill' && !S.bill) newBill();
+    render();
+    window.scrollTo(0, 0);
+    if (S.view === 'returns') loadDesk();
+    return;
+  }
   if (t.dataset.type) { b.type = t.dataset.type; render(); return; }
   if (t.dataset.party) {
     b.party = S.snap.customers.find((c) => String(c.id) === t.dataset.party);
@@ -923,6 +1122,13 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.pcbill) { pcBillSheet(S.snap.bills.find((x) => String(x.id) === t.dataset.pcbill)); return; }
   if (t.dataset.item) { itemSheet(t.dataset.item); return; }
   if (t.dataset.low) { S.stockLow = t.dataset.low === '1'; render(); return; }
+  if (t.dataset.rqtab) { S.rqTab = t.dataset.rqtab; render(); if (S.rqTab !== 'scan') loadDesk(); return; }
+  if (t.dataset.rqundo) { undoReturn(t.dataset.rqundo); return; }
+  if (t.dataset.rqpick) {
+    const r = ((S.desk && S.desk.waiting) || []).find((x) => String(x.id) === t.dataset.rqpick);
+    if (r) askCondition(r.tracking_id || r.order_id, r, {return_id: r.id});
+    return;
+  }
   if (t.dataset.rqdel) {
     if (!await window.UI.confirm('Remove this scan? It has not reached the PC.', {ok: 'Remove scan', danger: true})) return;
     S.rq = S.rq.filter((q) => q.uuid !== t.dataset.rqdel);

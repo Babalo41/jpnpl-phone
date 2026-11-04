@@ -378,8 +378,8 @@
       const body = make('div', 'stack-sm');
       body.innerHTML = (camOk ? '<video class="scan-cam" playsinline muted></video>' : '') +
         '<p class="hint" role="status"></p>' +
-        (url ? '<label class="btn btn-secondary btn-block">' + icon('camera') + 'Take a photo of the label' +
-          '<input type="file" accept="image/*" capture="environment" class="sr-only" data-help="rtn.scan_photo"></label>' : '');
+        '<label class="btn btn-secondary btn-block">' + icon('camera') + 'Take a photo of the label' +
+        '<input type="file" accept="image/*" capture="environment" class="sr-only" data-help="rtn.scan_photo"></label>';
       const video = body.querySelector('video');
       const say = (t) => { body.querySelector('.hint').textContent = t; };
       const h = modal({title: opts.title || 'Scan a barcode', body: body, onClose: () => finish('')});
@@ -395,6 +395,21 @@
       }
 
       function viaPc(blob, fast) {
+        if (!url) {
+          return new Promise((res) => {
+            if (typeof window !== 'undefined' && window.BarcodeDecoder) {
+              const img = new Image();
+              img.onload = () => {
+                const found = window.BarcodeDecoder.decode(img);
+                res(found.length ? found.map((r) => r.rawValue).join('\n') : '');
+              };
+              img.onerror = () => res('');
+              img.src = URL.createObjectURL(blob);
+            } else {
+              res('');
+            }
+          });
+        }
         const fd = new FormData();
         fd.append('photo', blob, 'scan.jpg');
         return fetch(url + (fast ? '?fast=1' : ''), {method: 'POST', body: fd,
