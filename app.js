@@ -225,8 +225,15 @@ function askCondition(code, match, pick) {
       matchInfo += '<div class="sub mb-2 text-pos">Suggested: <b>' + esc(match.suggested_condition.reason || sugDisp) + '</b></div>';
     }
   }
+  // An order line with no return yet is added as one: a partial return can lower its qty.
+  const whole = Number(match && match.qty) || 1;
+  const askQty = pick && pick.order_id && !match.return_id && whole > 1;
+  const qtyBox = askQty ? '<label class="field-row mb-2">Qty returned <input id="rqQty" type="number" min="1" ' +
+    'max="' + whole + '" step="1" inputmode="numeric" class="grow" value="' + whole + '" aria-label="Quantity returned" ' +
+    'data-help="papp.returns.qty"> of ' + qtyText(whole) + '</label>' : '';
   const m = sheet('What came back?', matchInfo + '<p class="small">Parcel <b>' + esc(codes[0]) + '</b>' +
-    (codes.length > 1 ? ' and ' + (codes.length - 1) + ' more code(s) from the label' : '') + '</p><div class="stack-sm">' +
+    (codes.length > 1 ? ' and ' + (codes.length - 1) + ' more code(s) from the label' : '') + '</p>' + qtyBox +
+    '<div class="stack-sm">' +
     RETURN_CONDITIONS.map((c) => {
       const isSug = sugDisp && c.code === sugDisp;
       const tag = isSug ? '<button type="button" class="btn btn-primary btn-block"' :
@@ -237,8 +244,14 @@ function askCondition(code, match, pick) {
   m.body.addEventListener('click', (e) => {
     const b = e.target.closest('[data-cond]');
     if (!b) return;
+    let sendPick = pick;
+    if (askQty) {
+      const n = Number(m.body.querySelector('#rqQty').value);
+      if (!(n > 0 && n <= whole)) { toast('Qty returned must be from 1 to ' + qtyText(whole) + '.', 'err'); return; }
+      sendPick = Object.assign({}, pick, {qty: n});
+    }
     m.close();
-    queueReturn(code, b.dataset.cond, pick);
+    queueReturn(code, b.dataset.cond, sendPick);
   });
 }
 
@@ -261,6 +274,10 @@ function pickReturnMatch(code, matches) {
   });
 }
 
+// What names one order line for the PC (returns.ORDER_LINE), so it adds that line.
+const orderPick = (o) => ({platform: o.platform, account_id: o.account_id, order_id: o.order_id,
+  item_id: o.item_id || '', channel_sku: o.channel_sku || ''});
+
 function pickOrderMatch(code, orders) {
   const m = sheet('Pick matching order', '<p class="small">' + orders.length + ' orders match this scan. Pick one to add as return:</p>' +
     '<div class="stack-sm">' +
@@ -276,9 +293,7 @@ function pickOrderMatch(code, orders) {
     const idx = parseInt(b.dataset.pickOrd, 10);
     const picked = orders[idx];
     m.close();
-    askCondition(picked.order_id || picked.tracking_id || code, picked, {platform: picked.platform,
-      account_id: picked.account_id, order_id: picked.order_id, item_id: picked.item_id || '',
-      channel_sku: picked.channel_sku || ''});
+    askCondition(picked.order_id || picked.tracking_id || code, picked, orderPick(picked));
   });
 }
 
@@ -304,7 +319,7 @@ async function handleScannedCode(text) {
         pickOrderMatch(text, r.orders);
         return;
       } else if (!r.found && r.orders && r.orders.length === 1) {
-        askCondition(text, r.orders[0]);
+        askCondition(text, r.orders[0], orderPick(r.orders[0]));
         return;
       }
     } catch (e) {

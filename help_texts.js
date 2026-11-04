@@ -4972,6 +4972,11 @@ window.HELP_TEXTS = {
   'papp.returns.unknown_today': {t: 'Not found today', what: 'Parcels scanned today that no return or order matched.',
     how: 'They wait on the PC Scan desk under "Parcels not found", with what the phone said came back.',
     tip: 'Sort them on the PC - pick the right return there.'},
+  'papp.returns.qty': {t: 'Qty returned', what: 'How many pieces of this order line came back in the parcel.',
+    how: 'Shown when the parcel matches an order with more than one piece and no return yet. The PC adds the return ' +
+    'with this qty and checks it in; it can never be more than the order had. With "Unopened RTO parcels" on, the ' +
+    'whole line is added.',
+    tip: 'Lower it when only part of the order came back.'},
   'papp.returns.search': {t: 'Search waiting returns', what: 'Finds a waiting return by order id, AWB, SKU or item name.',
     how: 'Searched on the shop PC. Tapping a return asks what came back and checks in exactly that one, through the ' +
     'same queue as a scan.',
