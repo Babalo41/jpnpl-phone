@@ -697,6 +697,7 @@ function viewPair() {
       '<div class="field"><label for="pLabel">Name for this phone</label><input id="pLabel" placeholder="e.g. Jiju\'s Samsung" ' +
         'data-help="papp.pair.label"></div>' +
       '<button type="submit" class="btn btn-primary btn-block" id="pGo">Pair</button></form>' +
+      '<p class="hint">Forgot your PIN? Ask the owner to set a new one in Settings on the shop PC. It works straight away.</p>' +
       '<p class="hint">Shop PC: ' + esc(S.conn.pc) + '</p>' :
       '<p class="muted">On the shop PC open <b>Settings &gt; Phone access</b>, switch it on and scan the QR code ' +
         'with this phone\'s camera.</p>') +
